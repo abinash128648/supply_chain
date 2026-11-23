@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Supply Chain Dashboard</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--tx:#1d2330;--mut:#6b7280;--bd:#e3e6ec;--ok:#15803d;--bad:#b91c1c;--warn:#b45309;--acc:#2563eb}
+@media(prefers-color-scheme:dark){:root{--bg:#12151c;--card:#1b2030;--tx:#e6e9f0;--mut:#98a1b3;--bd:#2c3347;--ok:#4ade80;--bad:#f87171;--warn:#fbbf24;--acc:#60a5fa}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:14px system-ui,sans-serif;padding:20px;max-width:1200px;margin:auto}
+header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}h1{font-size:20px;margin:0}
+h2{font-size:14px;margin:0 0 10px}.badge{padding:5px 12px;border-radius:99px;font-weight:600;border:1px solid}
+.ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}
+.grid{display:grid;gap:14px;grid-template-columns:repeat(4,1fr);margin-bottom:14px}.two{grid-template-columns:3fr 2fr}
+.panel,.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:14px}
+.card b{display:block;font-size:26px}.card span{color:var(--mut)}
+.scroll{max-height:320px;overflow:auto}table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:5px 8px;border-bottom:1px solid var(--bd);white-space:nowrap}th{color:var(--mut);font-weight:500}
+tr.click{cursor:pointer}tr.click:hover{background:var(--bg)}
+.pill{padding:1px 8px;border-radius:99px;font-size:12px;border:1px solid var(--bd)}
+.ALERT{color:var(--bad);border-color:var(--bad)}.FLAG{color:var(--warn);border-color:var(--warn)}
+input,select,button{font:inherit;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--card);color:var(--tx)}
+button{background:var(--acc);color:#fff;border:0;cursor:pointer}.row{display:flex;gap:8px;margin-bottom:10px}
+code{color:var(--mut)}
+@media(max-width:800px){.grid,.two{grid-template-columns:1fr 1fr}.two{grid-template-columns:1fr}}
+</style></head><body>
+<header><h1>Agri Supply Chain: Fraud &amp; Recall</h1><span id="badge" class="badge"></span></header>
+<div class="grid" id="stats"></div>
+
+<div class="grid two">
+  <div class="panel"><h2>Ledger (latest 60)</h2>
+    <div class="row"><select id="f"><option value="">All types</option><option>HARVEST</option><option>PROCESS</option><option>TRANSFER</option><option>ALERT</option><option>FLAG</option></select></div>
+    <div class="scroll"><table><thead><tr><th>#</th><th>Type</th><th>Batch</th><th>Actor</th><th>Detail</th><th>Hash</th></tr></thead><tbody id="ledger"></tbody></table></div></div>
+  <div class="panel"><h2>Fraud evidence (alerts &amp; ML flags)</h2>
+    <div class="scroll"><table><tbody id="evidence"></tbody></table></div></div>
+</div>
+
+<div class="grid two">
+  <div class="panel"><h2>Batches &amp; current holders <small class="bad">(click a row to simulate a recall)</small></h2>
+    <div class="row"><input id="q" placeholder="Search batch ID"></div>
+    <div class="scroll"><table><thead><tr><th>Batch</th><th>Made from</th><th>Held by</th></tr></thead><tbody id="batches"></tbody></table></div></div>
+  <div class="panel"><h2>Recall</h2>
+    <div class="row"><input id="rb" placeholder="Contaminated batch ID"><button id="go">Recall</button></div>
+    <div id="rout" class="scroll"><code>Enter a batch to see every derived batch and where the stock is now.</code></div></div>
+</div>
+
+<script>
+const $=id=>document.getElementById(id),
+esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])),
+pill=t=>`<span class="pill ${t}">${t}</span>`;
+let S,C;
+
+const detail=b=>{const x=b.data;
+  if(x.type=='ALERT')return[x.event.batch,x.event.actor,x.reason];
+  if(x.type=='FLAG')return[x.batch,'',`${x.reason} (block ${x.block})`];
+  if(x.type=='GENESIS')return['','','genesis'];
+  return[x.batch,x.actor,x.type=='TRANSFER'?`${x.qty} → ${x.to}`:`qty ${x.qty}`]};
+
+async function load(){
+  [S,C]=await Promise.all([fetch('/state').then(r=>r.json()),fetch('/chain').then(r=>r.json())]);
+  const ok=S.tampered_block===null;
+  $('badge').className='badge '+(ok?'ok':'bad');
+  $('badge').textContent=ok?'Chain intact':'Tampered at block '+S.tampered_block;
+  $('stats').innerHTML=[['Blocks',S.blocks],['Batches',Object.keys(S.batches).length],['Alerts',S.alerts],['ML flags',S.flags]]
+    .map(([k,v])=>`<div class="card"><b>${v}</b><span>${k}</span></div>`).join('');
+  draw();
+}
+
+function draw(){
+  const f=$('f').value, q=$('q').value.toLowerCase();
+  $('ledger').innerHTML=C.filter(b=>!f||b.data.type==f).slice(-60).reverse().map(b=>{
+    const[bt,ac,d]=detail(b);
+    return`<tr><td>${b.index}</td><td>${pill(b.data.type)}</td><td>${esc(bt)}</td><td>${esc(ac)}</td><td>${esc(d)}</td><td><code>${b.hash.slice(0,8)}</code></td></tr>`}).join('');
+  $('evidence').innerHTML=C.filter(b=>/ALERT|FLAG/.test(b.data.type)).reverse().map(b=>{
+    const[bt,ac,d]=detail(b);
+    return`<tr class="click" onclick="recall('${esc(bt).replace(/'/g,'')}')"><td>${pill(b.data.type)}</td><td>${esc(bt)}</td><td>${esc(d)}</td></tr>`}).join('')||'<tr><td>None</td></tr>';
+  $('batches').innerHTML=Object.entries(S.batches).filter(([b])=>b.toLowerCase().includes(q)).slice(-100).reverse().map(([b,v])=>
+    `<tr class="click" data-b="${esc(b)}"><td>${esc(b)}</td><td>${esc(v.parents.join(', ')||'farm origin')}</td><td>${esc(Object.entries(v.holders).map(([a,n])=>a+' ('+n+')').join(', ')||'-')}</td></tr>`).join('');
+}
+
+async function recall(b){
+  $('rb').value=b;
+  const r=await fetch('/recall/'+encodeURIComponent(b)).then(r=>r.json()), n=Object.keys(r).length;
+  $('rout').innerHTML=`<p class="bad"><b>${n} batch${n>1?'es':''} to recall</b></p><table><thead><tr><th>Batch</th><th>Stock now at</th></tr></thead><tbody>`+
+    Object.entries(r).map(([k,h])=>`<tr><td>${esc(k)}</td><td>${esc(Object.entries(h).map(([a,x])=>a+' ('+x+')').join(', ')||'none (consumed or shipped on)')}</td></tr>`).join('')+'</tbody></table>';
+}
+
+$('f').onchange=$('q').oninput=draw;
+$('go').onclick=()=>recall($('rb').value.trim());
+$('batches').onclick=e=>{const tr=e.target.closest('tr');if(tr)recall(tr.dataset.b)};
+load();setInterval(load,5000);
+</script></body></html>
